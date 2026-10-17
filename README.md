@@ -100,29 +100,122 @@ is a stable image-input/text-output model with a free tier and low paid prices; 
 [Google's pricing](https://ai.google.dev/gemini-api/docs/pricing). There is no automatic
 model or paid-tier fallback. Confirm model access and billing settings in your project.
 
-Both evaluation helpers share one lock-serialized request guard. By default, request
-starts are at least 15 seconds apart, each logical request has at most 3 attempts,
-and output is limited to 512 tokens. SDK retries are disabled. Only rate limits (429),
-server errors (5xx), and connection/timeouts are retried, with delays of at least 30,
-then 60 seconds, or longer when the server supplies `Retry-After` or Google `RetryInfo`.
+Both evaluation helpers share one request guard. It enforces a **fixed 15-second
+minimum** between request starts; `GEMINI_MIN_REQUEST_INTERVAL` can make the interval
+longer, not shorter. The smoke launcher enforces at least **30 seconds**. Defaults
+outside the launcher allow at most 3 attempts per logical request and 512 output
+tokens. SDK retries are disabled, and the client's network timeout is 60 seconds.
+Only rate limits (429), server errors (5xx), and connection/timeouts are retried,
+with backoff of at least 30, then 60 seconds, or longer server-specified delays.
 Permanent API errors fail immediately. Exhausted failures block further requests in
-the process, preventing outer evaluation retries from restarting the retry cycle.
-429 responses that explicitly identify daily quota exhaustion or a zero quota limit
-also block immediately rather than retrying; other 429 responses still use backoff.
+that process, preventing outer evaluation retries from restarting the retry cycle.
 
-`GEMINI_MAX_REQUESTS_PER_RUN=20` caps **every send**, including failed attempts, retries,
-and calls following empty responses, across both helpers. It resets on process restart,
-not at Google's daily quota reset. The interval must be finite and strictly positive;
-the attempt count, send cap, and output-token limit must be positive integers. Invalid
-settings fail before any request. Short output limits can truncate answers; adjust
-only after checking parser requirements, quotas, and cost.
+There are **two separate send caps**, counting failed sends, retries and requests
+following empty responses across both helpers:
 
-These protections are **per process**, not shared across separate runs: run only one
-evaluation process at a time. [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
-include per-project requests per minute, input tokens per minute, and requests per day.
-Your quotas are unknown; image-heavy requests may exceed token quotas even with pacing.
-These settings do not guarantee free-tier access or prevent all charges. Check your
-actual project quotas before increasing limits or restarting after a failure.
+- `GEMINI_MAX_REQUESTS_PER_RUN` is configurable and per process (default 20;
+  smoke at most 10). Only this counter resets when the process restarts.
+- A **fixed 20-attempt rolling-24-hour cap** persists across processes and restarts
+  using ignored repository-root `.runtime/gemini_budget.json` and its lock file.
+  Attempts are recorded before sending. This cap cannot be increased through `.env`.
+  Shared file locking also serializes requests from the same checkout.
+
+Explicit daily-quota exhaustion or zero-quota 429 responses immediately block the
+process and persist a cooldown of **at least 24 hours**. Other exhausted temporary
+failures persist a cooldown of **at least 60 seconds**; server-specified delays may
+extend either cooldown. Restarting does not clear the persistent cap or cooldowns,
+and a rolling 24 hours is not Google's calendar-day quota reset.
+
+**Do not delete, edit, reset or replace `.runtime/` or its ledger/lock to retry.**
+Unreadable, invalid or unsafe state fails closed (no request is sent). A clock moving
+backwards, including a monotonic-clock reset after reboot, can also fail closed.
+Prashansa, stop and seek help inspecting the cause rather than resetting the ledger
+or repeatedly restarting evaluation. `--check` does not validate or clear this ledger.
+
+The configurable interval must be finite and positive; attempts, process cap and
+output-token limit must be positive integers. Invalid settings fail before any
+request. Short output limits can truncate answers. Run only one evaluation at a
+time to keep GPU/memory use modest. These guards cover this checkout, not other
+checkouts, machines or clients using your project. [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+also include per-project input-token quotas. Image-heavy requests may exceed them
+even with pacing. These settings do not guarantee free-tier access or prevent all
+charges; check your actual project quotas before changing limits or retrying.
+
+### Safe one-question minival smoke test
+
+Prashansa, activate the existing `3dmem` environment, then use:
+
+```bash
+conda activate /data/miniconda3/envs/3dmem
+python run_smoke_test.py --help
+python run_smoke_test.py --check
+python run_smoke_test.py --run
+```
+
+YOLO-World also requires the official OpenAI `clip` package (not a similarly named
+PyPI package). After inspecting its setup code, install the pinned source into the
+active environment if missing:
+
+```bash
+python -m pip install --no-deps 'git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6'
+```
+
+This installs only that reviewed revision, without upgrading its dependencies;
+the existing environment must already supply its dependencies. The launcher sets
+`YOLO_AUTOINSTALL=false` so Ultralytics cannot silently install missing packages.
+
+`--help` explains the options. `--check` checks required packages, scene files,
+configuration and API-key presence **without API calls, downloads, model loading,
+or printing credentials**. No arguments also prints help. It uses the Python you
+invoked, not a hardcoded environment. From another directory, use the launcher's
+absolute path; it resolves repository paths itself. Checks do not test binary/GPU
+compatibility, provider access, quotas, or the correctness of model predictions.
+
+Only `--run` launches evaluation: the first of 184 questions sorted by question ID,
+scene `00802-wcojb4TFT35`, for **at most three navigation steps**, with visualization
+disabled. Camera resolution stays at the original 1280×1280; planner geometry is
+unchanged. The smoke config opts into `sam_autocast: true`, enabling CUDA mixed
+precision only around SAM prediction to reduce peak memory on the 8 GB GPU.
+It still uses the same SAM-L weights; baseline configs are untouched and the
+evaluator's default is false. Lower precision may change segmentation outputs, so
+this is a smoke-only compatibility setting, not a baseline-equivalent result.
+The initial offline perception probe ran out of CUDA memory at step 0 in SAM-L's
+FP32 global attention, before Gemini or ledger access. With autocast, the offline
+probe passed and the live three-step pipeline subsequently completed on this GPU.
+The separate `cfg/eval_aeqa_smoke.yaml` leaves your minival config alone.
+The launcher requires all four scene files and the minival scene-dataset config;
+the existing `data/hm3d/val` symlink must resolve to the extracted minival scenes.
+
+Every run gets a fresh `results/smoke/exp_eval_aeqa_smoke_<timestamp>_<id>/`
+directory and saved launch config, avoiding resumed/skipped questions and overwritten
+logs. Exported subprocess limits enforce at least 30 seconds between API sends,
+one attempt per request, at most 10 sends per run and 512 output tokens; stricter
+environment/`.env` settings win. The configured model (default
+`gemini-3.1-flash-lite`) is retained, with no automatic model or paid-tier fallback.
+These bounds are not a dollar or input-token budget. The shared guard's fixed
+15-second floor, persistent 20-attempt rolling-24-hour cap and persistent cooldowns
+still apply; never reset `.runtime/` to make another smoke run. Its network timeout
+is 60 seconds. A 900-second launcher timeout or Ctrl+C stops the evaluation
+process group; a request already received by Google cannot be undone.
+
+Missing model weights are warnings during `--check`; `--run` may download the
+official Ultralytics YOLO/SAM, LAION OpenCLIP and OpenAI CLIP artifacts through the
+installed libraries. Only proceed if you trust these upstream weight sources and
+their licenses: model checkpoints can contain executable serialized objects. The
+launcher installs nothing and has no separate `--prepare-models` mode. Explicit
+HF/Torch/YOLO/XDG/Matplotlib caches/configs use ignored repository `.cache/`.
+`HOME` is preserved: OpenAI CLIP is the exception and reuses/downloads its weights
+at `~/.cache/clip/ViT-B-32.pt`. Do not assume all caches are project-local. Thread pools are
+capped at two. An 8 GB GPU can still run out of memory; no successful GPU run is
+implied by preflight. `--run` sends scene images/prompts to Google and may incur
+charges. Review fresh logs before retrying, particularly after quota failures.
+
+**2026-10-17 result:** the pipeline exited 0 after three steps and six Gemini
+HTTP 200 responses, with no retries or observed 429 errors. The agent moved, but
+did **not** solve the question within the short step cap (0/1 task success).
+Pipeline completion is not answer accuracy or a benchmark score. See
+[the completed smoke-test report](docs/SMOKE_TEST_REPORT.md) for timings, local
+evidence links, safety limits, the earlier OOM and remaining risks.
 
 ### 2 - Run Evaluation on A-EQA
 

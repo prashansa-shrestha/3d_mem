@@ -340,9 +340,12 @@ class Scene:
         # Get Masks Using SAM or MobileSAM
         # UltraLytics SAM
         if xyxy_tensor.numel() != 0:
-            sam_out = self.sam_predictor.predict(
-                image_rgb, bboxes=xyxy_tensor, verbose=False
-            )
+            with torch.cuda.amp.autocast(
+                enabled=self.device.type == "cuda" and self.cfg.get("sam_autocast", False)
+            ):
+                sam_out = self.sam_predictor.predict(
+                    image_rgb, bboxes=xyxy_tensor, verbose=False
+                )
             masks_tensor = sam_out[0].masks.data
 
             masks_np = masks_tensor.cpu().numpy()
