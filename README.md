@@ -47,7 +47,7 @@ conda install -c conda-forge -c aihabitat habitat-sim=0.2.5 headless faiss-cpu=1
 conda install https://anaconda.org/pytorch3d/pytorch3d/0.7.4/download/linux-64/pytorch3d-0.7.4-py39_cu118_pyt201.tar.bz2 -y
 
 pip install omegaconf==2.3.0 open-clip-torch==2.26.1 ultralytics==8.2.31 supervision==0.21.0 opencv-python-headless==4.10.* \
- scikit-learn==1.4 scikit-image==0.22 open3d==0.18.0 hipart==1.0.4 openai==1.35.3 httpx==0.27.2                                                      
+ scikit-learn==1.4 scikit-image==0.22 open3d==0.18.0 hipart==1.0.4 openai==1.35.3 httpx==0.27.2 python-dotenv
 
 ```
 
@@ -64,8 +64,65 @@ contains `/your_path/hm3d/train/` and `/your_path/hm3d/val/`, you can set the `s
 The test questions of A-EQA and GOAT-Bench are provided in the `data/` folder. For A-EQA, we provide two subsets of different size: `aeqa_questions-41.json` and `aeqa_questions-184.json`, where `aeqa_questions-184.json` is the official subset provided by OpenEQA and `aeqa_questions-41.json` is a smaller subset for quick evaluation.
 For GOAT-Bench, we include the complete `val_unseen` split in this repository.
 
-#### OpenAI API Setup
-Please set up the endpoint and API key for the OpenAI API in `src/const.py`.
+#### Gemini API Setup
+The evaluation helpers use the OpenAI Python client with Gemini's OpenAI-compatible endpoint,
+`https://generativelanguage.googleapis.com/v1beta/openai/`.
+
+Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey).
+Prashansa, edit the repository-root `.env` file locally and fill in `GEMINI_API_KEY`;
+the supplied file deliberately has an empty key. If `.env` is absent, create it using
+[`.env.example`](.env.example), which contains only these placeholders:
+
+```dotenv
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_MIN_REQUEST_INTERVAL=15
+GEMINI_MAX_REQUEST_ATTEMPTS=3
+GEMINI_MAX_REQUESTS_PER_RUN=20
+GEMINI_MAX_OUTPUT_TOKENS=512
+```
+
+`python-dotenv` (included in the installation command above) automatically loads this
+repository-root `.env`, regardless of the current working directory. Existing environment
+variables take precedence over `.env` values. `GEMINI_MODEL` selects the model and defaults
+to `gemini-3.1-flash-lite` when unset. A missing or blank key raises a clear error before an API
+client is constructed. No source-code credential changes are needed; `OPENAI_KEY` remains
+an alias for the Gemini key for existing callers.
+
+Keep `.env` private: it is ignored by Git, and `.env.example` must never contain a real key.
+Evaluation transmits prompts and scene images (including base64-encoded views, snapshots,
+and goal images when used) to Google. Confirm that you may share these inputs, review the
+provider's data policies and pricing, and check your quota before running: requests and
+retries can incur API costs. This setup does not make any API calls on its own.
+
+The default [Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)
+is a stable image-input/text-output model with a free tier and low paid prices; see
+[Google's pricing](https://ai.google.dev/gemini-api/docs/pricing). There is no automatic
+model or paid-tier fallback. Confirm model access and billing settings in your project.
+
+Both evaluation helpers share one lock-serialized request guard. By default, request
+starts are at least 15 seconds apart, each logical request has at most 3 attempts,
+and output is limited to 512 tokens. SDK retries are disabled. Only rate limits (429),
+server errors (5xx), and connection/timeouts are retried, with delays of at least 30,
+then 60 seconds, or longer when the server supplies `Retry-After` or Google `RetryInfo`.
+Permanent API errors fail immediately. Exhausted failures block further requests in
+the process, preventing outer evaluation retries from restarting the retry cycle.
+429 responses that explicitly identify daily quota exhaustion or a zero quota limit
+also block immediately rather than retrying; other 429 responses still use backoff.
+
+`GEMINI_MAX_REQUESTS_PER_RUN=20` caps **every send**, including failed attempts, retries,
+and calls following empty responses, across both helpers. It resets on process restart,
+not at Google's daily quota reset. The interval must be finite and strictly positive;
+the attempt count, send cap, and output-token limit must be positive integers. Invalid
+settings fail before any request. Short output limits can truncate answers; adjust
+only after checking parser requirements, quotas, and cost.
+
+These protections are **per process**, not shared across separate runs: run only one
+evaluation process at a time. [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+include per-project requests per minute, input tokens per minute, and requests per day.
+Your quotas are unknown; image-heavy requests may exceed token quotas even with pacing.
+These settings do not guarantee free-tier access or prevent all charges. Check your
+actual project quotas before increasing limits or restarting after a failure.
 
 ### 2 - Run Evaluation on A-EQA
 

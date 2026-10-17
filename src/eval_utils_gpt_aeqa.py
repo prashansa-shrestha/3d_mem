@@ -1,5 +1,3 @@
-import openai
-from openai import OpenAI
 from PIL import Image
 import base64
 from io import BytesIO
@@ -8,12 +6,7 @@ import time
 from typing import Optional
 import logging
 from src.const import *
-
-
-client = OpenAI(
-    base_url=END_POINT,
-    api_key=OPENAI_KEY,
-)
+from src.gemini_client import request_completion
 
 
 def format_content(contents):
@@ -26,7 +19,6 @@ def format_content(contents):
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/png;base64,{c[1]}",
-                        "detail": "high",
                     },
                 }
             )
@@ -35,37 +27,12 @@ def format_content(contents):
 
 # send information to openai
 def call_openai_api(sys_prompt, contents) -> Optional[str]:
-    max_tries = 5
-    retry_count = 0
     formated_content = format_content(contents)
     message_text = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": formated_content},
     ]
-    while retry_count < max_tries:
-        try:
-            completion = client.chat.completions.create(
-                model="gpt-4o",  # model = "deployment_name"
-                messages=message_text,
-                temperature=0.7,
-                max_tokens=4096,
-                top_p=0.95,
-                frequency_penalty=0,
-                presence_penalty=0,
-            )
-            return completion.choices[0].message.content
-        except openai.RateLimitError as e:
-            print("Rate limit error, waiting for 60s")
-            time.sleep(30)
-            retry_count += 1
-            continue
-        except Exception as e:
-            print("Error: ", e)
-            time.sleep(60)
-            retry_count += 1
-            continue
-
-    return None
+    return request_completion(message_text)
 
 
 # encode tensor images to base64 format
@@ -287,7 +254,7 @@ def prefiltering(
         question, seen_classes, top_k, image_goal
     )
     if verbose:
-        logging.info(f"Prefiltering selected classes: {selected_classes}")
+        logging.info("Prefiltering selected class count: %d", len(selected_classes))
 
     keep_index = [
         i
@@ -325,13 +292,11 @@ def explore_step(step, cfg, verbose=False):
     )
 
     if verbose:
-        logging.info(f"Input prompt:")
-        message = sys_prompt
-        for c in content:
-            message += c[0]
-            if len(c) == 2:
-                message += f"[{c[1][:10]}...]"
-        logging.info(message)
+        logging.info(
+            "Evaluation request metadata: content blocks=%d, images=%d",
+            len(content),
+            sum(len(item) == 2 for item in content),
+        )
 
     retry_bound = 3
     final_response = None
@@ -354,9 +319,8 @@ def explore_step(step, cfg, verbose=False):
         response = response.lower()
         try:
             choice_type, choice_id = response.split(" ")
-        except Exception as e:
-            print(f"Error in splitting response: {response}")
-            print(e)
+        except Exception:
+            print("Invalid response format; retrying without logging response payload.")
             continue
 
         response_valid = False
