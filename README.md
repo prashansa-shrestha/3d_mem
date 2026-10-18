@@ -76,9 +76,11 @@ the supplied file deliberately has an empty key. If `.env` is absent, create it 
 ```dotenv
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-3.1-flash-lite
-GEMINI_MIN_REQUEST_INTERVAL=15
+GEMINI_REQUESTS_PER_MINUTE=7
+GEMINI_REQUESTS_PER_DAY=1200
+GEMINI_MIN_REQUEST_INTERVAL=8.571429
 GEMINI_MAX_REQUEST_ATTEMPTS=3
-GEMINI_MAX_REQUESTS_PER_RUN=20
+GEMINI_MAX_REQUESTS_PER_RUN=1200
 GEMINI_MAX_OUTPUT_TOKENS=512
 ```
 
@@ -109,10 +111,10 @@ is a stable image-input/text-output model with a free tier and low paid prices; 
 [Google's pricing](https://ai.google.dev/gemini-api/docs/pricing). There is no automatic
 model or paid-tier fallback. Confirm model access and billing settings in your project.
 
-Both evaluation helpers share one request guard. It enforces a **fixed 15-second
-minimum** between request starts; `GEMINI_MIN_REQUEST_INTERVAL` can make the interval
-longer, not shorter. The smoke launcher enforces at least **30 seconds**. Defaults
-outside the launcher allow at most 3 attempts on temporary failures and 512 output
+Both evaluation helpers and the smoke launcher share one request guard. Defaults
+allow **7 requests per minute**, paced at least `60 / 7` seconds apart.
+`GEMINI_REQUESTS_PER_MINUTE` sets that ceiling; `GEMINI_MIN_REQUEST_INTERVAL`
+can slow it further. Defaults allow at most 3 attempts on temporary failures and 512 output
 tokens. SDK retries are disabled, and the client's network timeout is 60 seconds.
 Confirmed quota exhaustion can additionally advance through the key list once,
 including in smoke runs; every send still counts against both caps below.
@@ -124,11 +126,13 @@ that process, preventing outer evaluation retries from restarting the retry cycl
 There are **two separate send caps**, counting failed sends, retries and requests
 following empty responses across both helpers:
 
-- `GEMINI_MAX_REQUESTS_PER_RUN` is configurable and per process (default 20;
-  smoke at most 10). Only this counter resets when the process restarts.
-- A **fixed 20-attempt rolling-24-hour cap** persists across processes and restarts
+- `GEMINI_MAX_REQUESTS_PER_RUN` is configurable and per process (default 1200).
+  Only this counter resets when the process restarts.
+- `GEMINI_REQUESTS_PER_DAY` defaults to **1200 attempts in a rolling 24 hours**,
+  shared across all keys. This cap persists across processes and restarts
   using ignored repository-root `.runtime/gemini_budget.json` and its lock file.
-  Attempts are recorded before sending. This cap cannot be increased through `.env`.
+  Attempts are recorded before sending. Configure these limits in `.env` to match
+  your project's actual Google quotas; local settings do not increase provider quota.
   Shared file locking also serializes requests from the same checkout.
 
 Explicit daily-quota exhaustion or zero-quota 429 responses try the next configured
@@ -140,13 +144,14 @@ and a rolling 24 hours is not Google's calendar-day quota reset.
 
 **Do not delete, edit, reset or replace `.runtime/` or its ledger/lock to retry.**
 Unreadable, invalid or unsafe state fails closed (no request is sent). A clock moving
-backwards, including a monotonic-clock reset after reboot, can also fail closed.
+backwards can also fail closed. Saved monotonic timestamps are not compared across runs.
 Prashansa, stop and seek help inspecting the cause rather than resetting the ledger
 or repeatedly restarting evaluation. `--check` does not validate or clear this ledger.
 
 The configurable interval must be finite and positive; attempts, process cap and
 output-token limit must be positive integers. Invalid settings fail before any
-request. Short output limits can truncate answers. Run only one evaluation at a
+request. Short output limits can truncate answers; the client logs a warning when
+the provider reports a token-limit finish. Run only one evaluation at a
 time to keep GPU/memory use modest. These guards cover this checkout, not other
 checkouts, machines or clients using your project. [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
 also include per-project input-token quotas. Image-heavy requests may exceed them
@@ -202,12 +207,13 @@ the existing `data/hm3d/val` symlink must resolve to the extracted minival scene
 
 Every run gets a fresh `results/smoke/exp_eval_aeqa_smoke_<timestamp>_<id>/`
 directory and saved launch config, avoiding resumed/skipped questions and overwritten
-logs. Exported subprocess limits enforce at least 30 seconds between API sends,
-up to three attempts per request, at most 10 sends per run and 512 output tokens; stricter
-environment/`.env` settings win. The configured model (default
+logs. The smoke launcher uses the same environment/`.env` request settings as the
+evaluator: defaults are 7 requests per minute, 1200 sends per rolling 24 hours,
+up to three attempts per request and 512 output tokens. It adds no separate
+request caps. The configured model (default
 `gemini-3.1-flash-lite`) is retained, with no automatic model or paid-tier fallback.
 These bounds are not a dollar or input-token budget. The shared guard's fixed
-15-second floor, persistent 20-attempt rolling-24-hour cap and persistent cooldowns
+configured request spacing, persistent rolling-24-hour cap and persistent cooldowns
 still apply; never reset `.runtime/` to make another smoke run. Its network timeout
 is 60 seconds. A 900-second launcher timeout or Ctrl+C stops the evaluation
 process group; a request already received by Google cannot be undone.

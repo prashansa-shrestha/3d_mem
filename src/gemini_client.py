@@ -144,8 +144,8 @@ def _persistent_budget():
         else:
             with os.fdopen(ledger_descriptor) as source:
                 _private_file(source.fileno())
-                contents = source.read(16385)
-                if len(contents) > 16384:
+                contents = source.read(131073)
+                if len(contents) > 131072:
                     raise ValueError("Oversized budget ledger")
                 ledger = json.loads(contents)
         _validate_ledger(ledger)
@@ -314,7 +314,10 @@ def _request_with_budget(messages, ledger):
                 if timestamp > now - GEMINI_ROLLING_WINDOW_SECONDS
             ]
             if len(ledger["attempts"]) >= GEMINI_ROLLING_REQUEST_LIMIT:
-                _blocked_reason = "Gemini hard rolling-24-hour cap of 20 attempts reached; no request sent."
+                _blocked_reason = (
+                    f"Gemini rolling-24-hour cap of {GEMINI_ROLLING_REQUEST_LIMIT} "
+                    "attempts reached; no request sent."
+                )
                 raise RuntimeError(_blocked_reason)
             interval = max(GEMINI_HARD_MIN_REQUEST_INTERVAL, GEMINI_MIN_REQUEST_INTERVAL)
             next_start = retry_not_before
@@ -413,6 +416,12 @@ def _request_with_budget(messages, ledger):
             _telemetry("success")
             if not completion.choices:
                 return None
+            if completion.choices[0].finish_reason in ("length", "MAX_TOKENS"):
+                logging.warning(
+                    "Gemini response reached the %d-token limit and may be truncated; "
+                    "increase GEMINI_MAX_OUTPUT_TOKENS if needed.",
+                    GEMINI_MAX_OUTPUT_TOKENS,
+                )
             return completion.choices[0].message.content or None
     except RuntimeError:
         if not _blocked_reason:

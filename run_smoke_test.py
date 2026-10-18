@@ -54,6 +54,8 @@ try:
         "model_present": bool(const.VLM_MODEL.strip()),
         "model": const.VLM_MODEL,
         "limits": {
+            "GEMINI_REQUESTS_PER_MINUTE": const.GEMINI_REQUESTS_PER_MINUTE,
+            "GEMINI_REQUESTS_PER_DAY": const.GEMINI_REQUESTS_PER_DAY,
             "GEMINI_MIN_REQUEST_INTERVAL": const.GEMINI_MIN_REQUEST_INTERVAL,
             "GEMINI_MAX_REQUEST_ATTEMPTS": const.GEMINI_MAX_REQUEST_ATTEMPTS,
             "GEMINI_MAX_REQUESTS_PER_RUN": const.GEMINI_MAX_REQUESTS_PER_RUN,
@@ -134,17 +136,10 @@ def preflight(environment):
         if not settings["model_present"]:
             errors.append("GEMINI_MODEL is blank; select your intended model explicitly.")
         environment["GEMINI_MODEL"] = settings["model"]
-        for name, boundary in {
-            "GEMINI_MIN_REQUEST_INTERVAL": 30,
-            "GEMINI_MAX_REQUEST_ATTEMPTS": 3,
-            "GEMINI_MAX_REQUESTS_PER_RUN": 10,
-            "GEMINI_MAX_OUTPUT_TOKENS": 512,
-        }.items():
-            value = settings["limits"][name]
+        for name, value in settings["limits"].items():
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError
-            bounded = max(value, boundary) if name.endswith("INTERVAL") else min(value, boundary)
-            environment[name] = str(bounded)
+            environment[name] = str(value)
         print("API key: presence checked privately; no client constructed or request sent.")
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         errors.append("Lightweight settings/config check failed; verify python-dotenv, OmegaConf, smoke YAML and numeric Gemini limits. Details suppressed to protect secrets.")
@@ -197,9 +192,12 @@ def run_evaluation(environment):
     ]
     print("Prashansa, --run explicitly enables downloads and Gemini requests; prompts/images leave this computer.")
     print(
-        "Limits: >=30s between sends, "
+        f"Limits: <={environment['GEMINI_REQUESTS_PER_MINUTE']} requests/minute, "
+        f"<={environment['GEMINI_REQUESTS_PER_DAY']} sends/rolling 24 hours, "
+        f"configured interval={environment['GEMINI_MIN_REQUEST_INTERVAL']}s, "
         f"<={environment['GEMINI_MAX_REQUEST_ATTEMPTS']} attempts per call, "
-        "<=10 sends, <=512 output tokens; stricter settings retained."
+        f"<={environment['GEMINI_MAX_REQUESTS_PER_RUN']} sends/run, "
+        f"<={environment['GEMINI_MAX_OUTPUT_TOKENS']} output tokens."
     )
     print("Configured Gemini model retained unchanged; no model or paid-tier fallback.")
     print(f"Fresh results: {output_dir}\nTimeout: 900 seconds. Ctrl+C stops the child process group.", flush=True)
