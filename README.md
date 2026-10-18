@@ -191,6 +191,8 @@ precision only around SAM prediction to reduce peak memory on the 8 GB GPU.
 It still uses the same SAM-L weights; baseline configs are untouched and the
 evaluator's default is false. Lower precision may change segmentation outputs, so
 this is a smoke-only compatibility setting, not a baseline-equivalent result.
+The launcher defaults `PYTORCH_CUDA_ALLOC_CONF` to `max_split_size_mb:128` to
+reduce GPU memory fragmentation between views; an existing setting takes priority.
 The initial offline perception probe ran out of CUDA memory at step 0 in SAM-L's
 FP32 global attention, before Gemini or ledger access. With autocast, the offline
 probe passed and the live three-step pipeline subsequently completed on this GPU.
@@ -201,7 +203,7 @@ the existing `data/hm3d/val` symlink must resolve to the extracted minival scene
 Every run gets a fresh `results/smoke/exp_eval_aeqa_smoke_<timestamp>_<id>/`
 directory and saved launch config, avoiding resumed/skipped questions and overwritten
 logs. Exported subprocess limits enforce at least 30 seconds between API sends,
-one attempt per request, at most 10 sends per run and 512 output tokens; stricter
+up to three attempts per request, at most 10 sends per run and 512 output tokens; stricter
 environment/`.env` settings win. The configured model (default
 `gemini-3.1-flash-lite`) is retained, with no automatic model or paid-tier fallback.
 These bounds are not a dollar or input-token budget. The shared guard's fixed

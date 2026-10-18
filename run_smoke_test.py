@@ -68,6 +68,7 @@ except Exception:
 
 def child_environment():
     environment = os.environ.copy()
+    environment.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
     cache = ROOT / ".cache"
     for name, relative in {
         "XDG_CACHE_HOME": "", "XDG_CONFIG_HOME": "config",
@@ -135,7 +136,7 @@ def preflight(environment):
         environment["GEMINI_MODEL"] = settings["model"]
         for name, boundary in {
             "GEMINI_MIN_REQUEST_INTERVAL": 30,
-            "GEMINI_MAX_REQUEST_ATTEMPTS": 1,
+            "GEMINI_MAX_REQUEST_ATTEMPTS": 3,
             "GEMINI_MAX_REQUESTS_PER_RUN": 10,
             "GEMINI_MAX_OUTPUT_TOKENS": 512,
         }.items():
@@ -195,7 +196,11 @@ def run_evaluation(environment):
         "--start_ratio", "0", "--end_ratio", "0.006",
     ]
     print("Prashansa, --run explicitly enables downloads and Gemini requests; prompts/images leave this computer.")
-    print("Limits: >=30s between sends, 1 attempt, <=10 sends, <=512 output tokens; stricter settings retained.")
+    print(
+        "Limits: >=30s between sends, "
+        f"<={environment['GEMINI_MAX_REQUEST_ATTEMPTS']} attempts per call, "
+        "<=10 sends, <=512 output tokens; stricter settings retained."
+    )
     print("Configured Gemini model retained unchanged; no model or paid-tier fallback.")
     print(f"Fresh results: {output_dir}\nTimeout: 900 seconds. Ctrl+C stops the child process group.", flush=True)
     process = None
