@@ -45,14 +45,6 @@ _lock = threading.Lock()
 _last_start = None
 _attempt_count = 0
 _blocked_reason = None
-_BOOT_ID_PATTERN = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
-
-
-def _current_boot_id():
-    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    if not re.fullmatch(_BOOT_ID_PATTERN, boot_id):
-        raise ValueError("Invalid system boot identity")
-    return boot_id
 
 
 def _private_file(descriptor):
@@ -68,10 +60,7 @@ def _private_file(descriptor):
 
 def _wall_now(ledger):
     now = time.time()
-    if (
-        not math.isfinite(now)
-        or now < ledger["updated_at"]
-    ):
+    if not math.isfinite(now) or now < ledger["updated_at"]:
         raise RuntimeError("Gemini budget clock moved backwards; no request sent.")
     ledger["updated_at"] = now
     return now
@@ -99,25 +88,12 @@ def _save_ledger(ledger):
             os.unlink(temporary_path)
 
 
-def _migrate_ledger_boot_id(ledger, boot_id):
-    if ledger.get("boot_id") != boot_id:
-        ledger["last_start_monotonic"] = 0
-        ledger["boot_id"] = boot_id
-
-
 def _validate_ledger(ledger):
-    legacy_fields = {
+    # Accept the optional boot_id from the earlier implementation; it is unused.
+    if not isinstance(ledger, dict) or set(ledger) - {"boot_id"} != {
         "updated_at", "attempts", "blocked_until", "last_start_monotonic", "inflight"
-    }
-    if not isinstance(ledger, dict) or set(ledger) not in (
-        legacy_fields, legacy_fields | {"boot_id"}
-    ):
+    }:
         raise ValueError("Invalid budget ledger")
-    if "boot_id" in ledger:
-        if not isinstance(ledger["boot_id"], str) or not re.fullmatch(
-            _BOOT_ID_PATTERN, ledger["boot_id"]
-        ):
-            raise ValueError("Invalid budget boot identity")
     if type(ledger["inflight"]) is not bool:
         raise ValueError("Invalid in-flight marker")
     attempts = ledger["attempts"]
@@ -161,8 +137,7 @@ def _persistent_budget():
                 raise ValueError("Missing existing budget ledger")
             ledger = {
                 "updated_at": 0, "attempts": [], "blocked_until": 0,
-                "last_start_monotonic": 0, "inflight": False,
-                "boot_id": _current_boot_id(),
+                "last_start_monotonic": 0, "inflight": False
             }
         else:
             with os.fdopen(ledger_descriptor) as source:
@@ -172,10 +147,6 @@ def _persistent_budget():
                     raise ValueError("Oversized budget ledger")
                 ledger = json.loads(contents)
         _validate_ledger(ledger)
-        boot_id = _current_boot_id()
-        # Old ledgers have no boot identity, so their monotonic value cannot
-        # safely be compared. Reset only that clock on migration or reboot.
-        _migrate_ledger_boot_id(ledger, boot_id)
         if ledger["inflight"]:
             raise RuntimeError(
                 "Gemini has an abandoned in-flight reservation; requests are blocked. "
@@ -347,10 +318,7 @@ def _request_with_budget(messages, ledger):
             if _last_start is not None:
                 next_start = max(next_start, _last_start + interval)
             if ledger["attempts"]:
-                if ledger["boot_id"] == _current_boot_id():
-                    next_start = max(
-                        next_start, ledger["last_start_monotonic"] + interval
-                    )
+                # Persisted wall time works across reboots; monotonic time does not.
                 next_start = max(next_start, time.monotonic() + max(
                     0, ledger["attempts"][-1] + interval - now
                 ))
