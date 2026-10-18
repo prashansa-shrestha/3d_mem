@@ -12,7 +12,15 @@ INVALID_SCENE_ID = []
 
 END_POINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-OPENAI_KEY = GEMINI_API_KEY
+# Accept [key1, key2] and ["key1", "key2"] without evaluating .env contents.
+GEMINI_API_KEYS = list(dict.fromkeys(
+    key.strip().strip("\"'").strip()
+    for key in os.getenv("GEMINI_API_KEY_LIST", "").strip().strip("[]").split(",")
+    if key.strip().strip("\"'").strip()
+))
+if not GEMINI_API_KEYS and GEMINI_API_KEY.strip():
+    GEMINI_API_KEYS = [GEMINI_API_KEY.strip()]
+OPENAI_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 VLM_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 

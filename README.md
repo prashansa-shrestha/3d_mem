@@ -89,6 +89,15 @@ to `gemini-3.1-flash-lite` when unset. A missing or blank key raises a clear err
 client is constructed. No source-code credential changes are needed; `OPENAI_KEY` remains
 an alias for the Gemini key for existing callers.
 
+For multiple keys, set `GEMINI_API_KEY_LIST=["key1", "key2"]` on one line in
+`.env` (unquoted comma-separated entries also work). The list takes priority over
+`GEMINI_API_KEY`; blank and duplicate entries are skipped. When Gemini explicitly
+reports daily-quota exhaustion or zero quota, the client tries the next key and
+keeps using it for the rest of that process. Timeouts and temporary rate limits
+use the existing retry handling. Keys are never printed in switch messages.
+Keys from the same Google project share quota; see
+[Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+
 Keep `.env` private: it is ignored by Git, and `.env.example` must never contain a real key.
 Evaluation transmits prompts and scene images (including base64-encoded views, snapshots,
 and goal images when used) to Google. Confirm that you may share these inputs, review the
@@ -103,8 +112,10 @@ model or paid-tier fallback. Confirm model access and billing settings in your p
 Both evaluation helpers share one request guard. It enforces a **fixed 15-second
 minimum** between request starts; `GEMINI_MIN_REQUEST_INTERVAL` can make the interval
 longer, not shorter. The smoke launcher enforces at least **30 seconds**. Defaults
-outside the launcher allow at most 3 attempts per logical request and 512 output
+outside the launcher allow at most 3 attempts on temporary failures and 512 output
 tokens. SDK retries are disabled, and the client's network timeout is 60 seconds.
+Confirmed quota exhaustion can additionally advance through the key list once,
+including in smoke runs; every send still counts against both caps below.
 Only rate limits (429), server errors (5xx), and connection/timeouts are retried,
 with backoff of at least 30, then 60 seconds, or longer server-specified delays.
 Permanent API errors fail immediately. Exhausted failures block further requests in
@@ -120,8 +131,9 @@ following empty responses across both helpers:
   Attempts are recorded before sending. This cap cannot be increased through `.env`.
   Shared file locking also serializes requests from the same checkout.
 
-Explicit daily-quota exhaustion or zero-quota 429 responses immediately block the
-process and persist a cooldown of **at least 24 hours**. Other exhausted temporary
+Explicit daily-quota exhaustion or zero-quota 429 responses try the next configured
+key. When no keys remain, they block the process and persist a cooldown of
+**at least 24 hours**. Other exhausted temporary
 failures persist a cooldown of **at least 60 seconds**; server-specified delays may
 extend either cooldown. Restarting does not clear the persistent cap or cooldowns,
 and a rolling 24 hours is not Google's calendar-day quota reset.

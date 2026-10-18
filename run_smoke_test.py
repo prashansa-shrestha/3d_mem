@@ -129,7 +129,7 @@ def preflight(environment):
         if probe.returncode or settings.get("error"):
             raise ValueError
         if not settings["key_present"]:
-            errors.append("GEMINI_API_KEY is missing/blank; fill it locally in .env or your environment.")
+            errors.append("GEMINI_API_KEY_LIST and GEMINI_API_KEY are missing/blank; set one locally in .env or your environment.")
         if not settings["model_present"]:
             errors.append("GEMINI_MODEL is blank; select your intended model explicitly.")
         environment["GEMINI_MODEL"] = settings["model"]

@@ -18,6 +18,7 @@ from openai import OpenAI
 
 from src.const import (
     END_POINT,
+    GEMINI_API_KEYS,
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MAX_REQUEST_ATTEMPTS,
     GEMINI_MAX_REQUESTS_PER_RUN,
@@ -33,7 +34,7 @@ from src.const import (
 
 if not OPENAI_KEY.strip():
     raise ValueError(
-        "GEMINI_API_KEY is missing or blank. Set it in the repository-root .env "
+        "GEMINI_API_KEY_LIST and GEMINI_API_KEY are missing or blank. Set one in .env "
         "file or your environment before running evaluation."
     )
 
@@ -45,6 +46,7 @@ _lock = threading.Lock()
 _last_start = None
 _attempt_count = 0
 _blocked_reason = None
+_key_index = 0
 
 
 def _private_file(descriptor):
@@ -294,11 +296,12 @@ def _finish_attempt(ledger):
 
 
 def _request_with_budget(messages, ledger):
-    global _last_start, _attempt_count, _blocked_reason
+    global _last_start, _attempt_count, _blocked_reason, _key_index
 
     try:
         retry_not_before = 0.0
-        for attempt_index in range(GEMINI_MAX_REQUEST_ATTEMPTS):
+        attempt_index = 0
+        while attempt_index < GEMINI_MAX_REQUEST_ATTEMPTS:
             if _attempt_count >= GEMINI_MAX_REQUESTS_PER_RUN:
                 _blocked_reason = (
                     "Gemini per-process request safety cap reached "
@@ -346,17 +349,30 @@ def _request_with_budget(messages, ledger):
                     top_p=0.95,
                 )
             except openai.APIError as error:
-                logging.error("Gemini request failed: %s", error)
+                error_message = str(error)
+                for key in GEMINI_API_KEYS:
+                    error_message = error_message.replace(key, "[redacted]")
+                logging.error("Gemini request failed: %s", error_message)
                 now = _finish_attempt(ledger)
                 status = getattr(error, "status_code", None)
                 _telemetry(status if isinstance(status, int) else "connection_or_api_error")
                 if status == 429 and _unavailable_quota(error):
+                    if _key_index + 1 < len(GEMINI_API_KEYS):
+                        _key_index += 1
+                        client.api_key = GEMINI_API_KEYS[_key_index]
+                        logging.warning(
+                            "Gemini quota exhausted; switching to key %d of %d",
+                            _key_index + 1, len(GEMINI_API_KEYS),
+                        )
+                        _save_ledger(ledger)
+                        retry_not_before = time.monotonic() + _server_delay(error)
+                        continue
                     ledger["blocked_until"] = now + max(
                         GEMINI_ROLLING_WINDOW_SECONDS, _server_delay(error)
                     )
                     _save_ledger(ledger)
                     _blocked_reason = (
-                        "Gemini reports a daily quota exhaustion or zero quota limit. "
+                        "Gemini reports quota exhaustion for all configured keys. "
                         "Further requests are blocked in this process; check project quota "
                         "and model availability before restarting."
                     )
@@ -390,6 +406,7 @@ def _request_with_budget(messages, ledger):
                     raise RuntimeError(_blocked_reason) from None
                 if _attempt_count < GEMINI_MAX_REQUESTS_PER_RUN:
                     retry_not_before = time.monotonic() + delay
+                attempt_index += 1
                 continue
             _finish_attempt(ledger)
             _save_ledger(ledger)
