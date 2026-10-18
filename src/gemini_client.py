@@ -346,6 +346,7 @@ def _request_with_budget(messages, ledger):
                     top_p=0.95,
                 )
             except openai.APIError as error:
+                logging.error("Gemini request failed: %s", error)
                 now = _finish_attempt(ledger)
                 status = getattr(error, "status_code", None)
                 _telemetry(status if isinstance(status, int) else "connection_or_api_error")
